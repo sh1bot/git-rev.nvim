@@ -146,8 +146,50 @@ in a statusline or other tooling.
 
 ## Installation
 
-With any plugin manager, point it at this directory. For example with
-lazy.nvim:
+The plugin works out of the box — no `setup()` call is required. Calling
+`setup()` is only needed to override a default (see
+[Configuration](#configuration)).
+
+### [lazy.nvim](https://github.com/folke/lazy.nvim)
+
+```lua
+{ "sh1bot/git-rev.nvim" }
+```
+
+Or, to override a default:
+
+```lua
+{
+  "sh1bot/git-rev.nvim",
+  opts = {
+    max_size = 20 * 1024 * 1024,
+  },
+}
+```
+
+### [packer.nvim](https://github.com/wbthomason/packer.nvim)
+
+```lua
+use("sh1bot/git-rev.nvim")
+```
+
+### [vim-plug](https://github.com/junegunn/vim-plug)
+
+```vim
+Plug 'sh1bot/git-rev.nvim'
+```
+
+### Native `packages` (no plugin manager)
+
+```sh
+git clone https://github.com/sh1bot/git-rev.nvim \
+  ~/.local/share/nvim/site/pack/plugins/start/git-rev.nvim
+```
+
+### Local checkout
+
+To develop against a local clone, point your manager at the directory. For
+example with lazy.nvim:
 
 ```lua
 { dir = "/path/to/git-rev.nvim" }
@@ -155,6 +197,9 @@ lazy.nvim:
 
 Or drop the directory into your `runtimepath` (`packpath`) — it is a standard
 `plugin/` + `lua/` layout with no build step.
+
+Whichever method you use, make sure the [requirements](#requirements) are met:
+Neovim 0.10+ and `git` on your `PATH`.
 
 ## Layout
 
