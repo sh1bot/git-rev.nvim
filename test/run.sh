@@ -361,6 +361,20 @@ case "$out" in
   *) bad "unsaved-real E37 :: $out" ;;
 esac
 
+# 21. partner selection ignores a non-diff editable window: with an extra
+#     editable split that is NOT in the diff, focus must still land on the diff
+#     partner, not the unrelated window.
+( cd "$WORK" && printf 'unrelated\n' > other.txt )
+out="$(cd "$WORK" && run_nvim \
+  'vim.cmd("edit other.txt"); vim.cmd("vsplit src/hello.c");
+   vim.cmd("diffsplit HEAD^1"); vim.wait(200);
+   local cb=vim.api.nvim_get_current_buf();
+   io.write("focus="..vim.fn.fnamemodify(vim.api.nvim_buf_get_name(cb),":t"))')"
+case "$out" in
+  *"focus=hello.c"*) ok "partner selection skips a non-diff editable window" ;;
+  *) bad "partner selection :: $out" ;;
+esac
+
 say ""
 say "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

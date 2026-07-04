@@ -294,22 +294,26 @@ local function setup_companion(gbuf)
   if not vim.api.nvim_buf_is_valid(gbuf) then
     return
   end
+  -- Find the diff window showing our companion buffer.  win_findbuf gives the
+  -- windows displaying it directly; we want the one in diff view.  If none is in
+  -- a diff (e.g. a plain `:e REV:path`), this is not a companion -- leave it be.
   local gwin
-  for _, w in ipairs(vim.api.nvim_list_wins()) do
-    if vim.api.nvim_win_get_buf(w) == gbuf then
+  for _, w in ipairs(vim.fn.win_findbuf(gbuf)) do
+    if vim.wo[w].diff then
       gwin = w
       break
     end
   end
-  -- Only act as a companion in a diff context; a plain `:e REV:path` is left be.
-  if not gwin or not vim.wo[gwin].diff then
+  if not gwin then
     return
   end
 
-  -- Find an editable sibling window (the real file) in the same tab page.
+  -- Find the editable diff window beside it -- the real file.  Restricting to
+  -- diff windows matters: a non-diff editable split must not be mistaken for the
+  -- partner (nor picked ahead of the actual partner) in the same tab page.
   local realwin
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(gwin))) do
-    if w ~= gwin then
+    if w ~= gwin and vim.wo[w].diff then
       local b = vim.api.nvim_win_get_buf(w)
       if b ~= gbuf and vim.bo[b].buftype == "" and vim.bo[b].modifiable then
         realwin = w
