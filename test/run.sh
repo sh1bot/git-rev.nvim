@@ -376,6 +376,21 @@ case "$out" in
   *) bad "unsaved-real companion :: $out" ;;
 esac
 
+# 22. 'hidden' + modified editor + :q hides the file and closes its window; the
+#     orphaned read-only companion must be cleaned up, not left stranding the user.
+out="$(cd "$WORK" && run_nvim \
+  'vim.o.hidden=true; vim.cmd("edit src/hello.c");
+   vim.api.nvim_buf_set_lines(0,0,0,false,{"// dirty"});
+   vim.cmd("diffsplit HEAD^1"); vim.wait(200);
+   pcall(function() vim.cmd("quit") end); vim.wait(200);
+   local rev=0; for _,b in ipairs(vim.api.nvim_list_bufs()) do
+     if vim.api.nvim_buf_is_valid(b) and vim.b[b].gitrev_object then rev=rev+1 end end;
+   io.write("revision_left="..rev)')"
+case "$out" in
+  *"revision_left=0"*) ok "hidden+modified editor :q cleans up the orphaned companion" ;;
+  *) bad "orphan cleanup :: $out" ;;
+esac
+
 say ""
 say "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

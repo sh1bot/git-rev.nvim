@@ -359,6 +359,27 @@ local function setup_companion(gbuf)
       pcall(vim.api.nvim_win_close, gwin, false)
     end,
   })
+
+  -- (3) If the real file's window actually closes while Neovim keeps running --
+  -- e.g. a :q with 'hidden' set (which hides an unsaved file instead of aborting
+  -- and so closes the window), :q!, or <C-w>c -- the companion is orphaned.
+  -- Clean up our own unedited buffer so the user is not left stranded in a
+  -- read-only view.  WinClosed only fires on a *real* close, so an aborted :q
+  -- (E37, no 'hidden') never reaches here and both windows are left intact.
+  vim.api.nvim_create_autocmd("WinClosed", {
+    pattern = tostring(realwin),
+    once = true,
+    callback = function()
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(gbuf)
+          and not vim.bo[gbuf].modified
+          and vim.b[gbuf].gitrev_object
+        then
+          pcall(vim.api.nvim_buf_delete, gbuf, { force = false })
+        end
+      end)
+    end,
+  })
 end
 
 -- Given a buffer and the name(s) it was opened under, try to in-fill.  Returns

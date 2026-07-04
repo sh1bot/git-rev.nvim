@@ -107,8 +107,15 @@ the current window and is left alone. The auto-close is **conservative**: at qui
 time it re-checks that the exact relationship still holds — both windows still in
 the diff, the companion still showing our unedited buffer, same tab page — and if
 you have changed anything (turned off diff, loaded another buffer into either
-side, edited the companion, moved it), it backs off and touches nothing. Disable
-entirely with `diff_companion = false`.
+side, edited the companion, moved it), it backs off and touches nothing.
+
+An unsaved real file needs care, because `:q` on it may **abort** (`E37`) or, with
+`'hidden'` set, **hide** it and close its window. So the companion is closed
+pre-emptively only when the real file is unmodified (a clean single `:q`); if the
+real file is modified the pre-close is skipped, and instead the orphaned
+(unedited) companion is cleaned up only once the real file's window has *actually*
+closed. An aborted `:q` therefore leaves both windows intact. Disable the whole
+behaviour with `diff_companion = false`.
 
 ## Safety
 
