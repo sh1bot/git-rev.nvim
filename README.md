@@ -116,6 +116,15 @@ only applies in a diff context; a plain `:e HEAD:path` opens the revision in the
 current window as an ordinary read-only buffer and is left alone. Disable the
 behaviour with `diff_companion = false`.
 
+An alternative mechanism is available as `diff_companion = "stepaside"`: the
+buffer stays an ordinary `nofile` (no help-window side effects), and instead the
+companion **steps out of the way at quit time** — on `QuitPre` its window closes
+before Neovim decides the quit's fate, so the real window is judged as the last
+one and the same native semantics apply; if the quit turns out to have been
+refused, the window is put back (same side, same size, diff re-established).
+Same ergonomics, different trade-off: no `buftype=help` quirks, but a brief
+window close/restore on every refused `:q`.
+
 ## Safety
 
 - **Large files**: blobs larger than `max_size` (default 10 MiB) are skipped
@@ -156,7 +165,7 @@ require("gitrev").setup({
   timeout   = 2000,             -- ms; hard ceiling on any git call
   min_hex   = 7,                -- min length for a bare hex token to be an id
   notify    = true,             -- warn when a guard skips a blob
-  diff_companion = true,        -- focus/close behaviour for diff companions
+  diff_companion = true,        -- true/"help", "stepaside", or false (see above)
 })
 ```
 

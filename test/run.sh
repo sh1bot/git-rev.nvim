@@ -388,6 +388,65 @@ case "$out" in
   *) bad "focus demur :: $out" ;;
 esac
 
+# ===========================================================================
+# Part 3: the alternative companion style, diff_companion = "stepaside".
+# Same expected quit ergonomics as the default, different mechanism: the
+# buffer stays nofile and the window steps out of :q's way (restored if the
+# quit is refused).
+# ===========================================================================
+SA_INIT="$WORK/init_sa.lua"
+cat > "$SA_INIT" <<EOF
+dofile("$SHIM")
+vim.opt.runtimepath:prepend("$PLUGIN_ROOT")
+vim.opt.swapfile = false
+require('gitrev').setup({ diff_companion = "stepaside" })
+EOF
+
+# 23. stepaside: single :quit on a clean real file exits nvim.
+rm -f "$WORK/survived23"
+( cd "$WORK" && nvim --headless -u "$SA_INIT" src/hello.c \
+    +'lua vim.cmd("diffsplit HEAD^1"); vim.wait(200)' \
+    +'quit' \
+    +"call writefile(['x'], '$WORK/survived23')" \
+    +'qa!' >/dev/null 2>&1 )
+if [ -f "$WORK/survived23" ]; then
+  bad "stepaside: nvim survived a single :quit"
+else
+  ok "stepaside: single :quit on a clean file exits"
+fi
+
+# 24. stepaside: unsaved + 'hidden' :q refuses natively (E37) and the companion
+#     is restored -- two windows, both in diff, buffer still nofile.
+out="$(cd "$WORK" && nvim --headless -u "$SA_INIT" src/hello.c \
+  +'lua vim.o.hidden=true; vim.cmd("diffsplit HEAD^1"); vim.wait(200);
+   vim.api.nvim_buf_set_lines(0,0,0,false,{"// dirty"});
+   local okq,e=pcall(vim.cmd,"quit"); vim.wait(200);
+   local wins=vim.api.nvim_list_wins(); local diffs=0;
+   for _,w in ipairs(wins) do if vim.wo[w].diff then diffs=diffs+1 end end;
+   io.write("err="..tostring(tostring(e):match("E%d+"))..";wins="..#wins..";diffs="..diffs
+     ..";bt="..vim.bo[vim.fn.bufnr("HEAD^1")].buftype)' \
+  +'qa!' 2>&1)"
+case "$out" in
+  *"err=E37"*"wins=2"*"diffs=2"*"bt=nofile"*) ok "stepaside: unsaved+'hidden' :q refuses (E37), companion restored in diff" ;;
+  *) bad "stepaside unsaved :q :: $out" ;;
+esac
+
+# 25. stepaside round trip: refused :q, then :write, then :q exits.
+rm -f "$WORK/survived25"
+( cd "$WORK" && nvim --headless -u "$SA_INIT" src/hello.c \
+    +'lua vim.cmd("diffsplit HEAD^1"); vim.wait(200); vim.api.nvim_buf_set_lines(0,0,0,false,{"// note"})' \
+    +'lua pcall(vim.cmd, "quit"); vim.wait(200)' \
+    +'write' \
+    +'quit' \
+    +"call writefile(['x'], '$WORK/survived25')" \
+    +'qa!' >/dev/null 2>&1 )
+git -C "$WORK" checkout -q -- src/hello.c   # undo the test's :write
+if [ -f "$WORK/survived25" ]; then
+  bad "stepaside: refused :q, :write, :q did not exit"
+else
+  ok "stepaside: refused :q -> restored view -> :write -> :q exits"
+fi
+
 say ""
 say "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

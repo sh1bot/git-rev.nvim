@@ -11,7 +11,11 @@ M.config = {
   timeout = 2000, -- ms ceiling on any git call
   min_hex = 7, -- min length for a bare hex token to count as an object id
   notify = true, -- warn when a guard skips a blob
-  diff_companion = true, -- focus/quit behaviour for `:diffsplit REV` / `-d`
+  -- Focus/quit behaviour for `:diffsplit REV` / `-d` companions: true or "help"
+  -- makes the companion auxiliary like a help window (buftype=help); "stepaside"
+  -- keeps buftype=nofile and steps the window out of :q's way instead; false
+  -- disables.
+  diff_companion = true,
 }
 
 function M.setup(opts)
@@ -226,6 +230,57 @@ end
 -- Core + entry point.
 --------------------------------------------------------------------------------
 
+-- The "stepaside" companion style: the buffer stays ordinary (buftype=nofile);
+-- instead, on QuitPre the companion window closes *before* Neovim decides the
+-- quit's fate, so the real window is judged as the last one and Neovim's own
+-- don't-quit-when-unsaved logic applies natively (:q on unsaved refuses with
+-- E37 even under 'hidden'; :q! and :wq pass through).  We never judge the quit
+-- ourselves -- QuitPre cannot see a !, 'confirm', or a failing :wq write.  If
+-- the quit turns out to have been refused (the real window still exists a tick
+-- later), the companion is put back: same side, same size, diff re-established
+-- on both windows ('diffopt' closeoff dropped it when the companion closed).
+local function setup_stepaside(gbuf, gwin, realwin)
+  vim.api.nvim_create_autocmd("QuitPre", {
+    buffer = vim.api.nvim_win_get_buf(realwin),
+    callback = function()
+      if vim.api.nvim_get_current_win() ~= realwin
+        or not vim.api.nvim_win_is_valid(gwin)
+        or vim.api.nvim_win_get_buf(gwin) ~= gbuf then
+        return
+      end
+      local gp = vim.api.nvim_win_get_position(gwin)
+      local rp = vim.api.nvim_win_get_position(realwin)
+      local vert = gp[2] ~= rp[2]
+      local mods, size
+      if vert then
+        mods = (gp[2] < rp[2] and "leftabove" or "rightbelow") .. " vertical"
+        size = vim.api.nvim_win_get_width(gwin)
+      else
+        mods = gp[1] < rp[1] and "leftabove" or "rightbelow"
+        size = vim.api.nvim_win_get_height(gwin)
+      end
+      pcall(vim.api.nvim_win_close, gwin, false)
+      vim.schedule(function()
+        if not (vim.api.nvim_win_is_valid(realwin) and vim.api.nvim_buf_is_valid(gbuf)) then
+          return -- the quit went through
+        end
+        pcall(function() -- refused: restore the companion
+          vim.api.nvim_set_current_win(realwin)
+          vim.cmd(mods .. " sbuffer " .. gbuf)
+          gwin = vim.api.nvim_get_current_win()
+          local resize = vert and vim.api.nvim_win_set_width or vim.api.nvim_win_set_height
+          resize(gwin, size)
+          vim.cmd("diffthis")
+          vim.api.nvim_win_call(realwin, function()
+            vim.cmd("diffthis")
+          end)
+          vim.api.nvim_set_current_win(realwin)
+        end)
+      end)
+    end,
+  })
+end
+
 -- Make a diff-companion buffer behave like Vim's help window.  Deferred (via
 -- vim.schedule) because diff mode and sibling windows settle only after
 -- `:diffsplit` / `-d` finish.
@@ -259,11 +314,15 @@ local function setup_companion(gbuf)
     return
   end
 
-  -- buftype=help makes the companion auxiliary: it stops keeping the session
-  -- alive and stops interfering with the real file's :q, so a single :q exits
-  -- when clean and aborts on unsaved changes (E37) even under 'hidden' -- Vim's
-  -- own mechanism, no autocmds.  Filetype/syntax and diff are unaffected.
-  vim.bo[gbuf].buftype = "help"
+  if M.config.diff_companion == "stepaside" then
+    setup_stepaside(gbuf, gwin, realwin)
+  else
+    -- buftype=help makes the companion auxiliary: it stops keeping the session
+    -- alive and stops interfering with the real file's :q, so a single :q exits
+    -- when clean and aborts on unsaved changes (E37) even under 'hidden' -- Vim's
+    -- own mechanism, no autocmds.  Filetype/syntax and diff are unaffected.
+    vim.bo[gbuf].buftype = "help"
+  end
 
   -- Decline focus handed to us at creation; never take it if it is elsewhere.
   if vim.api.nvim_get_current_win() == gwin then
