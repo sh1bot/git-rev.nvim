@@ -146,10 +146,11 @@ esac
 # ===========================================================================
 # 1. diff-on-the-commandline: nvim -d src/hello.c HEAD^1  (deduced filename)
 out="$(cd "$WORK" && run_nvim \
-  'local b=vim.fn.bufnr("HEAD^1"); io.write("RO="..tostring(vim.bo[b].readonly)..";FT="..vim.bo[b].filetype..";BT="..vim.bo[b].buftype..";TXT="..table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\n"))' \
+  'vim.wait(200); local b=vim.fn.bufnr("HEAD^1"); io.write("RO="..tostring(vim.bo[b].readonly)..";FT="..vim.bo[b].filetype..";BT="..vim.bo[b].buftype..";TXT="..table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\n"))' \
   -d src/hello.c 'HEAD^1')"
 case "$out" in
-  *"RO=true"*"FT=c"*"BT=nofile"*'puts("v1")'*) ok "nvim -d deduces filename, v1 content, RO, ft=c" ;;
+  # companion is auxiliary (buftype=help, like a help window) so a single :q exits
+  *"RO=true"*"FT=c"*"BT=help"*'puts("v1")'*) ok "nvim -d deduces filename, v1 content, RO, ft=c, aux window" ;;
   *) bad "nvim -d HEAD^1 :: $out" ;;
 esac
 
@@ -173,10 +174,10 @@ esac
 
 # 4. trailing-colon explicit deduce form
 out="$(cd "$WORK" && run_nvim \
-  'vim.cmd("diffsplit HEAD^1:"); local b=vim.fn.bufnr("HEAD^1:"); io.write("TXT="..table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\n").."|BT="..vim.bo[b].buftype)' \
+  'vim.cmd("diffsplit HEAD^1:"); local b=vim.fn.bufnr("HEAD^1:"); io.write("TXT="..table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\n"))' \
   src/hello.c)"
 case "$out" in
-  *'puts("v1")'*"BT=nofile"*) ok "trailing-colon HEAD^1: deduces filename" ;;
+  *'puts("v1")'*) ok "trailing-colon HEAD^1: deduces filename" ;;
   *) bad "HEAD^1: :: $out" ;;
 esac
 
@@ -322,7 +323,8 @@ case "$out" in
   *) bad "companion focus :: $out" ;;
 esac
 
-# 18. diff companion: a single :quit on the real file exits (companion closes).
+# 18. companion is auxiliary: a single :quit on a clean real file exits nvim
+#     (the buftype=help companion does not keep the session alive).
 rm -f "$WORK/survived"
 ( cd "$WORK" && nvim --headless -u "$MIN_INIT" src/hello.c \
     +'lua vim.cmd("diffsplit HEAD^1"); vim.wait(200)' \
@@ -330,65 +332,33 @@ rm -f "$WORK/survived"
     +"call writefile(['x'], '$WORK/survived')" \
     +'qa!' >/dev/null 2>&1 )
 if [ -f "$WORK/survived" ]; then
-  bad "companion auto-close: nvim survived a single :quit"
+  bad "companion aux: nvim survived a single :quit"
 else
-  ok "diff companion: single :quit exits (companion auto-closed)"
+  ok "diff companion is auxiliary: single :quit on a clean file exits"
 fi
 
-# 19. plain :e REV:path is NOT a companion (focus stays, no extra windows).
+# 19. plain :e REV:path is NOT a companion (focus stays, buftype stays nofile).
 out="$(cd "$WORK" && run_nvim \
   'vim.cmd("edit HEAD:src/hello.c"); vim.wait(200);
    local cb=vim.api.nvim_get_current_buf();
-   io.write("on_gitrev="..tostring(vim.b[cb].gitrev_object~=nil)..";wins="..#vim.api.nvim_list_wins())')"
+   io.write("on_gitrev="..tostring(vim.b[cb].gitrev_object~=nil)..";bt="..vim.bo[cb].buftype..";wins="..#vim.api.nvim_list_wins())')"
 case "$out" in
-  *"on_gitrev=true"*"wins=1"*) ok "plain :e is not treated as a diff companion" ;;
+  *"on_gitrev=true"*"bt=nofile"*"wins=1"*) ok "plain :e is not treated as a diff companion" ;;
   *) bad "plain :e companion leak :: $out" ;;
 esac
 
-# 20. relationship broken (:diffoff!) -> auto-close backs off, companion survives
-#     a :quit on the real file (so nvim does NOT exit on a single :quit).
-rm -f "$WORK/survived20"
-( cd "$WORK" && nvim --headless -u "$MIN_INIT" src/hello.c \
-    +'lua vim.cmd("diffsplit HEAD^1"); vim.wait(200)' \
-    +'diffoff!' \
-    +'quit' \
-    +"call writefile(['x'], '$WORK/survived20')" \
-    +'qa!' >/dev/null 2>&1 )
-if [ -f "$WORK/survived20" ]; then
-  ok "companion backs off when the diff relationship is broken"
-else
-  bad "companion still force-closed after :diffoff! (should back off)"
-fi
-
-# 21. unsaved real file: a quit that Vim would abort/confirm must NOT close the
-#     companion.  Fire QuitPre directly (headless :q does not enforce E37) and
-#     assert the handler backs off while the real buffer is modified, but acts
-#     once it is unmodified.
-out="$(cd "$WORK" && run_nvim \
-  'vim.cmd("edit src/hello.c"); vim.cmd("diffsplit HEAD^1"); vim.wait(200);
-   vim.api.nvim_buf_set_lines(0,0,0,false,{"// dirty"});
-   vim.cmd("doautocmd QuitPre"); local dirty=#vim.api.nvim_list_wins();
-   vim.bo.modified=false;
-   vim.cmd("doautocmd QuitPre"); local clean=#vim.api.nvim_list_wins();
-   io.write("dirty_wins="..dirty..";clean_wins="..clean)')"
-case "$out" in
-  *"dirty_wins=2"*"clean_wins=1"*) ok "unsaved real file: companion kept until the real file is saved" ;;
-  *) bad "unsaved-real companion :: $out" ;;
-esac
-
-# 22. 'hidden' + modified editor + :q hides the file and closes its window; the
-#     orphaned read-only companion must be cleaned up, not left stranding the user.
+# 20. unsaved real file: :q aborts with E37 and leaves BOTH windows -- even with
+#     'hidden' set (the reported muddle).  The auxiliary companion makes Vim
+#     treat the real window as the last one, so the unsaved check fires natively.
 out="$(cd "$WORK" && run_nvim \
   'vim.o.hidden=true; vim.cmd("edit src/hello.c");
    vim.api.nvim_buf_set_lines(0,0,0,false,{"// dirty"});
    vim.cmd("diffsplit HEAD^1"); vim.wait(200);
-   pcall(function() vim.cmd("quit") end); vim.wait(200);
-   local rev=0; for _,b in ipairs(vim.api.nvim_list_bufs()) do
-     if vim.api.nvim_buf_is_valid(b) and vim.b[b].gitrev_object then rev=rev+1 end end;
-   io.write("revision_left="..rev)')"
+   local ok,e=pcall(function() vim.cmd("quit") end);
+   io.write("quit_ok="..tostring(ok)..";err="..tostring(e and tostring(e):match("E%d+"))..";wins="..#vim.api.nvim_list_wins())')"
 case "$out" in
-  *"revision_left=0"*) ok "hidden+modified editor :q cleans up the orphaned companion" ;;
-  *) bad "orphan cleanup :: $out" ;;
+  *"quit_ok=false"*"err=E37"*"wins=2"*) ok "unsaved real file: :q aborts (E37) and keeps both windows, even with hidden" ;;
+  *) bad "unsaved-real E37 :: $out" ;;
 esac
 
 say ""

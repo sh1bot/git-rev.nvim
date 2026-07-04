@@ -287,9 +287,9 @@ end
 
 -- When an in-filled buffer is a diff companion (its window is in diff mode
 -- beside a real, editable file), make it behave like one: return focus to the
--- real file, and close the companion when that file's window is closed so a
--- single :q suffices.  Runs deferred (via vim.schedule) because diff mode and
--- the sibling windows are only settled after `:diffsplit` / `-d` finish.
+-- real file and mark the companion as an auxiliary window.  Runs deferred (via
+-- vim.schedule) because diff mode and the sibling windows are only settled after
+-- `:diffsplit` / `-d` finish.
 local function setup_companion(gbuf)
   if not vim.api.nvim_buf_is_valid(gbuf) then
     return
@@ -321,65 +321,18 @@ local function setup_companion(gbuf)
     return
   end
 
-  -- (1) Focus the real, editable file.
+  -- Make the companion an *auxiliary* window, exactly like Vim's help window:
+  -- `buftype=help` means it no longer keeps the session alive and no longer
+  -- interferes with the real file's :q.  So the real file's quit behaves as if
+  -- the companion were not there -- a single :q exits when it is clean, and
+  -- aborts on unsaved changes (E37) even with 'hidden' set, instead of silently
+  -- hiding the file and orphaning the companion.  This is Vim's own mechanism;
+  -- no autocmds, no guessing whether a quit will succeed.  The filetype/syntax
+  -- we set and the diff highlighting are unaffected.
+  vim.bo[gbuf].buftype = "help"
+
+  -- Focus the real, editable file.
   pcall(vim.api.nvim_set_current_win, realwin)
-
-  -- (2) Close the companion when the real file is quit -- but only if the exact
-  -- relationship we set up is still intact.  QuitPre fires *before* the quit, so
-  -- closing the companion window here leaves the real window as the last one and
-  -- a single :q exits.  If the user has changed anything -- un-diffed either
-  -- side, loaded another buffer into either window, edited or replaced the
-  -- companion, moved it to another tab, or has unsaved changes in the real file
-  -- (whose :q will abort) -- we back away and touch nothing, so we can never
-  -- destroy a layout the user has taken over or close a view whose partner stays.
-  vim.api.nvim_create_autocmd("QuitPre", {
-    buffer = vim.api.nvim_win_get_buf(realwin),
-    callback = function()
-      if vim.api.nvim_get_current_win() ~= realwin then
-        return -- some other window onto the real file is being quit
-      end
-      if not (vim.api.nvim_win_is_valid(gwin) and vim.api.nvim_win_is_valid(realwin)) then
-        return
-      end
-      if vim.bo[vim.api.nvim_win_get_buf(realwin)].modified then
-        return -- unsaved real file: its :q will abort, so leave the companion up
-      end
-      if vim.api.nvim_win_get_buf(gwin) ~= gbuf then
-        return -- the companion window now shows something else
-      end
-      if vim.bo[gbuf].modified or not vim.b[gbuf].gitrev_object then
-        return -- companion was edited or is no longer ours
-      end
-      if not (vim.wo[gwin].diff and vim.wo[realwin].diff) then
-        return -- the diff relationship was turned off
-      end
-      if vim.api.nvim_win_get_tabpage(gwin) ~= vim.api.nvim_win_get_tabpage(realwin) then
-        return -- moved apart
-      end
-      pcall(vim.api.nvim_win_close, gwin, false)
-    end,
-  })
-
-  -- (3) If the real file's window actually closes while Neovim keeps running --
-  -- e.g. a :q with 'hidden' set (which hides an unsaved file instead of aborting
-  -- and so closes the window), :q!, or <C-w>c -- the companion is orphaned.
-  -- Clean up our own unedited buffer so the user is not left stranded in a
-  -- read-only view.  WinClosed only fires on a *real* close, so an aborted :q
-  -- (E37, no 'hidden') never reaches here and both windows are left intact.
-  vim.api.nvim_create_autocmd("WinClosed", {
-    pattern = tostring(realwin),
-    once = true,
-    callback = function()
-      vim.schedule(function()
-        if vim.api.nvim_buf_is_valid(gbuf)
-          and not vim.bo[gbuf].modified
-          and vim.b[gbuf].gitrev_object
-        then
-          pcall(vim.api.nvim_buf_delete, gbuf, { force = false })
-        end
-      end)
-    end,
-  })
 end
 
 -- Given a buffer and the name(s) it was opened under, try to in-fill.  Returns

@@ -99,22 +99,21 @@ When a revision is in-filled as one side of a diff — `:diffsplit HEAD^1` or
 `nvim -d file.txt HEAD^1` — it behaves like a companion to the real file:
 
 - **focus returns to the real, editable file** (not the read-only revision), and
-- **closing the real file closes the companion**, so a single `:q` exits instead
-  of leaving the revision buffer behind.
+- the companion window is made **auxiliary**, exactly like Neovim's help window
+  (`buftype=help`).
 
-This only applies in a diff context; a plain `:e HEAD:path` opens the revision in
-the current window and is left alone. The auto-close is **conservative**: at quit
-time it re-checks that the exact relationship still holds — both windows still in
-the diff, the companion still showing our unedited buffer, same tab page — and if
-you have changed anything (turned off diff, loaded another buffer into either
-side, edited the companion, moved it), it backs off and touches nothing.
+Making it auxiliary means Neovim treats the *real* file's window as the one that
+matters, so quitting behaves the way you expect and no window-juggling is needed:
 
-An unsaved real file needs care, because `:q` on it may **abort** (`E37`) or, with
-`'hidden'` set, **hide** it and close its window. So the companion is closed
-pre-emptively only when the real file is unmodified (a clean single `:q`); if the
-real file is modified the pre-close is skipped, and instead the orphaned
-(unedited) companion is cleaned up only once the real file's window has *actually*
-closed. An aborted `:q` therefore leaves both windows intact. Disable the whole
+- a single `:q` on the real file exits (the companion doesn't keep the session
+  alive), and
+- if the real file has unsaved changes, `:q` aborts with `E37` — **even with
+  `'hidden'` set** — and leaves both windows, instead of hiding the file and
+  stranding you in the read-only revision.
+
+The filetype/syntax and diff highlighting are unaffected by `buftype=help`. This
+only applies in a diff context; a plain `:e HEAD:path` opens the revision in the
+current window as an ordinary read-only buffer and is left alone. Disable the
 behaviour with `diff_companion = false`.
 
 ## Safety
