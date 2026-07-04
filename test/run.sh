@@ -312,6 +312,70 @@ case "$out" in
   *) bad "max_lines guard :: $out" ;;
 esac
 
+# 17. diff companion: focus returns to the real file after :diffsplit.
+out="$(cd "$WORK" && run_nvim \
+  'vim.cmd("diffsplit HEAD^1"); vim.wait(200); local cb=vim.api.nvim_get_current_buf();
+   io.write("focus_gitrev="..tostring(vim.b[cb].gitrev_object~=nil)..";name="..vim.fn.fnamemodify(vim.api.nvim_buf_get_name(cb),":t"))' \
+  src/hello.c)"
+case "$out" in
+  *"focus_gitrev=false"*"name=hello.c"*) ok "diff companion: focus returns to the real file" ;;
+  *) bad "companion focus :: $out" ;;
+esac
+
+# 18. diff companion: a single :quit on the real file exits (companion closes).
+rm -f "$WORK/survived"
+( cd "$WORK" && nvim --headless -u "$MIN_INIT" src/hello.c \
+    +'lua vim.cmd("diffsplit HEAD^1"); vim.wait(200)' \
+    +'quit' \
+    +"call writefile(['x'], '$WORK/survived')" \
+    +'qa!' >/dev/null 2>&1 )
+if [ -f "$WORK/survived" ]; then
+  bad "companion auto-close: nvim survived a single :quit"
+else
+  ok "diff companion: single :quit exits (companion auto-closed)"
+fi
+
+# 19. plain :e REV:path is NOT a companion (focus stays, no extra windows).
+out="$(cd "$WORK" && run_nvim \
+  'vim.cmd("edit HEAD:src/hello.c"); vim.wait(200);
+   local cb=vim.api.nvim_get_current_buf();
+   io.write("on_gitrev="..tostring(vim.b[cb].gitrev_object~=nil)..";wins="..#vim.api.nvim_list_wins())')"
+case "$out" in
+  *"on_gitrev=true"*"wins=1"*) ok "plain :e is not treated as a diff companion" ;;
+  *) bad "plain :e companion leak :: $out" ;;
+esac
+
+# 20. relationship broken (:diffoff!) -> auto-close backs off, companion survives
+#     a :quit on the real file (so nvim does NOT exit on a single :quit).
+rm -f "$WORK/survived20"
+( cd "$WORK" && nvim --headless -u "$MIN_INIT" src/hello.c \
+    +'lua vim.cmd("diffsplit HEAD^1"); vim.wait(200)' \
+    +'diffoff!' \
+    +'quit' \
+    +"call writefile(['x'], '$WORK/survived20')" \
+    +'qa!' >/dev/null 2>&1 )
+if [ -f "$WORK/survived20" ]; then
+  ok "companion backs off when the diff relationship is broken"
+else
+  bad "companion still force-closed after :diffoff! (should back off)"
+fi
+
+# 21. unsaved real file: a quit that Vim would abort/confirm must NOT close the
+#     companion.  Fire QuitPre directly (headless :q does not enforce E37) and
+#     assert the handler backs off while the real buffer is modified, but acts
+#     once it is unmodified.
+out="$(cd "$WORK" && run_nvim \
+  'vim.cmd("edit src/hello.c"); vim.cmd("diffsplit HEAD^1"); vim.wait(200);
+   vim.api.nvim_buf_set_lines(0,0,0,false,{"// dirty"});
+   vim.cmd("doautocmd QuitPre"); local dirty=#vim.api.nvim_list_wins();
+   vim.bo.modified=false;
+   vim.cmd("doautocmd QuitPre"); local clean=#vim.api.nvim_list_wins();
+   io.write("dirty_wins="..dirty..";clean_wins="..clean)')"
+case "$out" in
+  *"dirty_wins=2"*"clean_wins=1"*) ok "unsaved real file: companion kept until the real file is saved" ;;
+  *) bad "unsaved-real companion :: $out" ;;
+esac
+
 say ""
 say "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

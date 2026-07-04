@@ -35,6 +35,11 @@ M.config = {
   min_hex = 7,
   -- Emit notifications for guard trips (too large / binary).
   notify = true,
+  -- When a revision is in-filled as a diff companion (`:diffsplit REV`,
+  -- `nvim -d file REV`), move focus back to the real editable file and close
+  -- the companion automatically when that real file's window is closed -- so a
+  -- single :q exits.  Only applies in a diff context.
+  diff_companion = true,
 }
 
 function M.setup(opts)
@@ -280,6 +285,82 @@ end
 -- Core + entry point.
 --------------------------------------------------------------------------------
 
+-- When an in-filled buffer is a diff companion (its window is in diff mode
+-- beside a real, editable file), make it behave like one: return focus to the
+-- real file, and close the companion when that file's window is closed so a
+-- single :q suffices.  Runs deferred (via vim.schedule) because diff mode and
+-- the sibling windows are only settled after `:diffsplit` / `-d` finish.
+local function setup_companion(gbuf)
+  if not vim.api.nvim_buf_is_valid(gbuf) then
+    return
+  end
+  local gwin
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(w) == gbuf then
+      gwin = w
+      break
+    end
+  end
+  -- Only act as a companion in a diff context; a plain `:e REV:path` is left be.
+  if not gwin or not vim.wo[gwin].diff then
+    return
+  end
+
+  -- Find an editable sibling window (the real file) in the same tab page.
+  local realwin
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(gwin))) do
+    if w ~= gwin then
+      local b = vim.api.nvim_win_get_buf(w)
+      if b ~= gbuf and vim.bo[b].buftype == "" and vim.bo[b].modifiable then
+        realwin = w
+        break
+      end
+    end
+  end
+  if not realwin then
+    return
+  end
+
+  -- (1) Focus the real, editable file.
+  pcall(vim.api.nvim_set_current_win, realwin)
+
+  -- (2) Close the companion when the real file is quit -- but only if the exact
+  -- relationship we set up is still intact.  QuitPre fires *before* the quit, so
+  -- closing the companion window here leaves the real window as the last one and
+  -- a single :q exits.  If the user has changed anything -- un-diffed either
+  -- side, loaded another buffer into either window, edited or replaced the
+  -- companion, moved it to another tab, or has unsaved changes in the real file
+  -- (whose :q will abort) -- we back away and touch nothing, so we can never
+  -- destroy a layout the user has taken over or close a view whose partner stays.
+  vim.api.nvim_create_autocmd("QuitPre", {
+    buffer = vim.api.nvim_win_get_buf(realwin),
+    callback = function()
+      if vim.api.nvim_get_current_win() ~= realwin then
+        return -- some other window onto the real file is being quit
+      end
+      if not (vim.api.nvim_win_is_valid(gwin) and vim.api.nvim_win_is_valid(realwin)) then
+        return
+      end
+      if vim.bo[vim.api.nvim_win_get_buf(realwin)].modified then
+        return -- unsaved real file: its :q will abort, so leave the companion up
+      end
+      if vim.api.nvim_win_get_buf(gwin) ~= gbuf then
+        return -- the companion window now shows something else
+      end
+      if vim.bo[gbuf].modified or not vim.b[gbuf].gitrev_object then
+        return -- companion was edited or is no longer ours
+      end
+      if not (vim.wo[gwin].diff and vim.wo[realwin].diff) then
+        return -- the diff relationship was turned off
+      end
+      if vim.api.nvim_win_get_tabpage(gwin) ~= vim.api.nvim_win_get_tabpage(realwin) then
+        return -- moved apart
+      end
+      pcall(vim.api.nvim_win_close, gwin, false)
+    end,
+  })
+end
+
 -- Given a buffer and the name(s) it was opened under, try to in-fill.  Returns
 -- true when the buffer was taken over, false to fall through to Neovim's
 -- default new-file behaviour.
@@ -353,6 +434,14 @@ function M.try_infill(buf, cur_names)
 
   -- Breadcrumb for statuslines / other tooling.
   vim.b[buf].gitrev_object = object
+
+  -- As a diff companion, hand focus back to the real file and follow its close.
+  if M.config.diff_companion then
+    vim.schedule(function()
+      setup_companion(buf)
+    end)
+  end
+
   return true
 end
 

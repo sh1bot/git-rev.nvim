@@ -93,6 +93,23 @@ The first real, existing file found lends its name (addressed relative to its
 own directory via git's `rev:./name` syntax, so no repo-root computation is
 needed).
 
+## Diff companion
+
+When a revision is in-filled as one side of a diff — `:diffsplit HEAD^1` or
+`nvim -d file.txt HEAD^1` — it behaves like a companion to the real file:
+
+- **focus returns to the real, editable file** (not the read-only revision), and
+- **closing the real file closes the companion**, so a single `:q` exits instead
+  of leaving the revision buffer behind.
+
+This only applies in a diff context; a plain `:e HEAD:path` opens the revision in
+the current window and is left alone. The auto-close is **conservative**: at quit
+time it re-checks that the exact relationship still holds — both windows still in
+the diff, the companion still showing our unedited buffer, same tab page — and if
+you have changed anything (turned off diff, loaded another buffer into either
+side, edited the companion, moved it), it backs off and touches nothing. Disable
+entirely with `diff_companion = false`.
+
 ## Safety
 
 - **Large files**: blobs larger than `max_size` (default 10 MiB) are skipped
@@ -133,6 +150,7 @@ require("gitrev").setup({
   timeout   = 2000,             -- ms; hard ceiling on any git call
   min_hex   = 7,                -- min length for a bare hex token to be an id
   notify    = true,             -- warn when a guard skips a blob
+  diff_companion = true,        -- focus/close behaviour for diff companions
 })
 ```
 
