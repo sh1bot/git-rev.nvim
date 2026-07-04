@@ -1,45 +1,17 @@
--- gitrev: in-fill buffers whose name looks like a git revision.
---
--- When Neovim is asked to edit a file that does not exist, we inspect the name.
--- If it parses as a git revision and resolves to a blob in the repository, we
--- load that blob's content into the buffer, mark it read-only, and give it the
--- filetype of the file it stands in for.
---
--- Design constraints (from the request):
---   * Cheap disambiguation first, git second.  We never shell out for a name
---     that is not revision-shaped (see M.parse -- pure, no vim, no filesystem).
---   * Minimal external calls.  A successful in-fill costs two git invocations
---     (one metadata probe, one blob read); a miss costs at most one (two when an
---     explicit path is retried under a fallback interpretation).
---   * No stalls.  Every git call goes through vim.system with a timeout, so a
---     slow or hung git cannot freeze the editor.
---   * Guard against large, binary, and huge-line-count blobs.
---
--- Requires Neovim 0.10+ (vim.system).
+-- gitrev: edit a non-existent file whose name looks like a git revision and get
+-- the corresponding blob, read-only, with the filetype of the file it stands in
+-- for.  Requires Neovim 0.10+ (vim.system).
 
 local M = {}
 
 M.config = {
   enabled = true,
-  -- Maximum blob size to load, in bytes.  Larger blobs are skipped with a
-  -- warning and the buffer falls through to normal new-file behaviour.
-  max_size = 10 * 1024 * 1024,
-  -- Maximum number of lines to load.  Bounds the worst-case time to populate
-  -- the buffer for blobs that are within max_size but have a huge line count
-  -- (e.g. millions of tiny lines); the read is aborted as soon as it is
-  -- exceeded, so it costs nothing beyond one read buffer.
-  max_lines = 500000,
-  -- Hard ceiling on how long any single git call may run, in milliseconds.
-  timeout = 2000,
-  -- Minimum length for a bare hex token to be treated as an object id.
-  min_hex = 7,
-  -- Emit notifications for guard trips (too large / binary).
-  notify = true,
-  -- When a revision is in-filled as a diff companion (`:diffsplit REV`,
-  -- `nvim -d file REV`), move focus back to the real editable file and close
-  -- the companion automatically when that real file's window is closed -- so a
-  -- single :q exits.  Only applies in a diff context.
-  diff_companion = true,
+  max_size = 10 * 1024 * 1024, -- bytes; larger blobs are skipped
+  max_lines = 500000, -- lines; larger blobs are skipped (read aborts early)
+  timeout = 2000, -- ms ceiling on any git call
+  min_hex = 7, -- min length for a bare hex token to count as an object id
+  notify = true, -- warn when a guard skips a blob
+  diff_companion = true, -- focus/quit behaviour for `:diffsplit REV` / `-d`
 }
 
 function M.setup(opts)
@@ -48,36 +20,25 @@ end
 
 --------------------------------------------------------------------------------
 -- Name parsing (pure: no vim, no filesystem, no git).
---
--- Answers, syntactically only: does this name look enough like a git revision
--- that we should try to resolve it, and if so what are the rev and (maybe) path?
--- The "does it actually exist" check happens later, in git.
 --------------------------------------------------------------------------------
 
--- Characters git uses in revision expressions but which essentially never
--- appear in an about-to-be-created filename (colon is handled separately as the
--- path separator; dots and dashes are excluded as they are common in names).
+-- Punctuation git uses in revisions but filenames rarely do (colon is handled
+-- separately; dots/dashes excluded as common in names).
 local REV_PUNCT = "[%^~@{}]"
 
--- Git's own default abbreviation length (core.abbrev) is 7; a good floor that
--- admits realistic short ids while rejecting 4-letter hex words ("dead").
-local DEFAULT_MIN_HEX = 7
-
 local function looks_hex(s, min_hex)
-  min_hex = min_hex or DEFAULT_MIN_HEX
+  min_hex = min_hex or 7
   return s:match("^%x+$") ~= nil and #s >= min_hex and #s <= 64
 end
 
---- Parse a buffer name into a revision spec, or nil when it is not
---- revision-shaped.  Spec fields: rev (string) and path (string|nil); a nil
---- path means the filename has to be deduced from context.
+--- Parse a name into { rev, path } (path nil means "deduce it"), or nil when the
+--- name is not revision-shaped.
 function M.parse(name, opts)
   opts = opts or {}
   if type(name) ~= "string" or name == "" then
     return nil
   end
-  -- Ignore URL-like virtual buffers from other plugins (fugitive://, oil://,
-  -- term://, http://, ...).
+  -- Leave other plugins' URL-like buffers (fugitive://, oil://, ...) alone.
   if name:match("^%w[%w+.%-]*://") then
     return nil
   end
@@ -86,24 +47,18 @@ function M.parse(name, opts)
   if colon then
     local rev = name:sub(1, colon - 1)
     local path = name:sub(colon + 1)
-    -- A Windows drive letter ("C:\foo", "C:/foo") is not rev:path.
+    -- Not a Windows drive letter ("C:\foo").
     if #rev == 1 and rev:match("%a") and path:match("^[/\\]") then
       return nil
     end
     if path == "" then
-      -- Trailing colon: explicit "treat as revision, deduce filename".
-      if rev == "" then
-        return nil
-      end
-      return { rev = rev, path = nil }
+      return rev ~= "" and { rev = rev, path = nil } or nil -- trailing colon
     end
-    -- rev:path (git blob syntax); empty rev is git's index notation (:path).
-    return { rev = rev, path = path }
+    return { rev = rev, path = path } -- rev:path (empty rev = git index)
   end
 
-  -- No colon: a revision only when hex, or carrying git revision punctuation.
-  -- Plain tokens (HEAD, master, v1.2.3, README) are left alone; use "HEAD:" to
-  -- force one of those.
+  -- No colon: a revision only when hex or carrying revision punctuation, so plain
+  -- names (HEAD, master, README) stay ordinary; use "HEAD:" to force them.
   if looks_hex(name, opts.min_hex) or name:match(REV_PUNCT) then
     return { rev = name, path = nil }
   end
@@ -111,7 +66,7 @@ function M.parse(name, opts)
 end
 
 --------------------------------------------------------------------------------
--- git layer (vim.system: argv list -- no shell, raw bytes, first-class timeout).
+-- git layer (vim.system: argv list, no shell, raw bytes, first-class timeout).
 --------------------------------------------------------------------------------
 
 local function warn(msg)
@@ -122,8 +77,7 @@ end
 
 local GIT_ENV = { GIT_TERMINAL_PROMPT = "0", GIT_OPTIONAL_LOCKS = "0" }
 
--- Probe an object with a single `git cat-file --batch-check`.  Returns
--- { oid, type, size } or nil (missing / not a repo / timed out / errored).
+-- { oid, type, size } for an object, or nil (missing / not a repo / timed out).
 local function probe(dir, object)
   local res = vim.system({ "git", "-C", dir, "cat-file", "--batch-check" }, {
     stdin = object .. "\n",
@@ -133,7 +87,7 @@ local function probe(dir, object)
   if res.code ~= 0 or not res.stdout then
     return nil
   end
-  -- "<oid> <type> <size>" on success, "<object> missing" otherwise.
+  -- "<oid> <type> <size>", else "<object> missing".
   local oid, otype, size = vim.trim(res.stdout):match("^(%x+)%s+(%S+)%s+(%d+)$")
   if not oid then
     return nil
@@ -141,14 +95,10 @@ local function probe(dir, object)
   return { oid = oid, type = otype, size = tonumber(size) }
 end
 
--- Read a blob's lines by oid, or nil on error/timeout/binary/too-many-lines.
--- vim.system captures stdout as raw bytes (NULs and all) and enforces the
--- timeout itself, so we work on the exact content: reject on a NUL byte (git's
--- binary signal, and a byte a buffer line cannot hold), bail past max_lines
--- before splitting so a pathological blob never builds a giant list, then split.
+-- Blob lines by oid, or nil on error/timeout/binary/too-many-lines.
 local function read_blob(dir, oid, object)
   local res = vim.system({ "git", "-C", dir, "cat-file", "blob", oid }, {
-    text = false,
+    text = false, -- raw bytes, NULs preserved
     env = GIT_ENV,
     timeout = M.config.timeout,
   }):wait()
@@ -157,12 +107,14 @@ local function read_blob(dir, oid, object)
   end
   local data = res.stdout
 
+  -- A NUL is git's binary signal, and a byte a buffer line cannot hold anyway.
   if data:find("\0", 1, true) then
     warn(object .. " looks binary; leaving as a new file")
     return nil
   end
 
-  -- Count newlines, bailing past the cap without building the line list.
+  -- Count newlines and bail past the cap before splitting, so a pathological
+  -- blob never builds a giant list.
   local count, pos = 0, 0
   while true do
     pos = data:find("\n", pos + 1, true)
@@ -178,9 +130,7 @@ local function read_blob(dir, oid, object)
   end
 
   local lines = vim.split(data, "\n", { plain = true })
-  -- git blobs normally end in "\n", giving a trailing empty item; drop it so we
-  -- do not add a spurious blank final line (readfile semantics).
-  if lines[#lines] == "" then
+  if lines[#lines] == "" then -- drop the trailing-newline artifact
     lines[#lines] = nil
   end
   return lines
@@ -194,11 +144,9 @@ local function is_readable_file(p)
   return p ~= nil and p ~= "" and vim.fn.filereadable(p) == 1
 end
 
--- Collect real, existing files that could lend their name to a bare revision,
--- in priority order: alternate file, other windows in this tab, the argument
--- list, then any other loaded buffer.  Covers `:diffsplit HEAD^1` (deduce from
--- the issuing buffer) and `nvim -d file.txt HEAD^1` (deduce from the other file
--- on the command line).
+-- Real existing files that could lend their name to a bare revision, in priority
+-- order: alternate file, sibling windows, argument list, other loaded buffers.
+-- Covers `:diffsplit HEAD^1` and `nvim -d file HEAD^1`.
 local function deduce_files(cur_buf, cur_names)
   local out, seen, skip = {}, {}, {}
   for _, n in ipairs(cur_names) do
@@ -245,8 +193,8 @@ local function is_anchored(p)
   return p:sub(1, 1) == "/" or p:sub(1, 2) == "./" or p:sub(1, 3) == "../"
 end
 
--- Address a real filesystem path as a git object relative to its own directory,
--- so git discovers the repo that *contains the file*, not the one at cwd.
+-- Address a file as a git object relative to its own directory, so git finds the
+-- repo that contains the file, not the one at cwd.
 local function object_for_file(rev, filepath)
   local abs = vim.fn.fnamemodify(filepath, ":p")
   return {
@@ -255,47 +203,35 @@ local function object_for_file(rev, filepath)
   }
 end
 
--- Ordered list of { dir, object } candidates for a spec, or nil.
---   * explicit rev:path -- treat the path as an ordinary (cwd-relative)
---     filename, let git discover the repo that contains it, then fall back to
---     git's repo-root-relative reading from cwd (so a root-relative path typed
---     from a subdirectory keeps working).
---   * deduced form -- borrow a filename from a real file on the command line /
---     in a sibling window and address it relative to that file's own directory.
+-- Ordered { dir, object } candidates to try, plus a display path, or nil.
 local function locate(spec, cur_buf, cur_names)
   if spec.path then
-    local cwd = vim.fn.getcwd()
-    local p = spec.path
-    local cands = { object_for_file(spec.rev, p) }
-    if not is_anchored(p) then
-      cands[#cands + 1] = { dir = cwd, object = spec.rev .. ":" .. p }
+    -- Explicit path: cwd-relative (via the file's own dir), then git's
+    -- repo-root-relative reading as a fallback.
+    local cands = { object_for_file(spec.rev, spec.path) }
+    if not is_anchored(spec.path) then
+      cands[#cands + 1] = { dir = vim.fn.getcwd(), object = spec.rev .. ":" .. spec.path }
     end
-    return cands, p
+    return cands, spec.path
   end
 
   local files = deduce_files(cur_buf, cur_names)
   if #files == 0 then
     return nil
   end
-  local file = files[1]
-  return { object_for_file(spec.rev, file) }, vim.fn.fnamemodify(file, ":t")
+  return { object_for_file(spec.rev, files[1]) }, vim.fn.fnamemodify(files[1], ":t")
 end
 
 --------------------------------------------------------------------------------
 -- Core + entry point.
 --------------------------------------------------------------------------------
 
--- When an in-filled buffer is a diff companion (its window is in diff mode
--- beside a real, editable file), make it behave like one: return focus to the
--- real file and mark the companion as an auxiliary window.  Runs deferred (via
--- vim.schedule) because diff mode and the sibling windows are only settled after
+-- Make a diff-companion buffer behave like Vim's help window.  Deferred (via
+-- vim.schedule) because diff mode and sibling windows settle only after
 -- `:diffsplit` / `-d` finish.
 local function setup_companion(gbuf)
-  -- Find the diff window showing our companion buffer.  win_findbuf gives the
-  -- windows displaying it directly; we want the one in diff view.  If none is in
-  -- a diff (e.g. a plain `:e REV:path`), this is not a companion -- leave it be.
-  -- (An invalid/wiped gbuf simply yields no windows, so no separate guard is
-  -- needed; and reaching a window that shows gbuf proves it is valid.)
+  -- The diff window showing our buffer (none => plain `:e REV:path`, leave be).
+  -- An invalid gbuf yields no windows, so no separate validity guard is needed.
   local gwin
   for _, w in ipairs(vim.fn.win_findbuf(gbuf)) do
     if vim.wo[w].diff then
@@ -307,9 +243,8 @@ local function setup_companion(gbuf)
     return
   end
 
-  -- Find the editable diff window beside it -- the real file.  Restricting to
-  -- diff windows matters: a non-diff editable split must not be mistaken for the
-  -- partner (nor picked ahead of the actual partner) in the same tab page.
+  -- The editable diff window beside it -- the real file.  Requiring diff here
+  -- keeps a non-diff editable split from being mistaken for the partner.
   local realwin
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(gwin))) do
     if w ~= gwin and vim.wo[w].diff then
@@ -324,29 +259,19 @@ local function setup_companion(gbuf)
     return
   end
 
-  -- Make the companion an *auxiliary* window, exactly like Vim's help window:
-  -- `buftype=help` means it no longer keeps the session alive and no longer
-  -- interferes with the real file's :q.  So the real file's quit behaves as if
-  -- the companion were not there -- a single :q exits when it is clean, and
-  -- aborts on unsaved changes (E37) even with 'hidden' set, instead of silently
-  -- hiding the file and orphaning the companion.  This is Vim's own mechanism;
-  -- no autocmds, no guessing whether a quit will succeed.  The filetype/syntax
-  -- we set and the diff highlighting are unaffected.
+  -- buftype=help makes the companion auxiliary: it stops keeping the session
+  -- alive and stops interfering with the real file's :q, so a single :q exits
+  -- when clean and aborts on unsaved changes (E37) even under 'hidden' -- Vim's
+  -- own mechanism, no autocmds.  Filetype/syntax and diff are unaffected.
   vim.bo[gbuf].buftype = "help"
 
-  -- Hand focus to the real, editable file -- but only if it was handed to us.
-  -- `:diffsplit` / `-d` leave the cursor in the freshly opened revision; we
-  -- simply decline that focus and pass it to the real file.  If focus is already
-  -- elsewhere (some other focus policy placed it), we do not interfere -- we only
-  -- demur when we are the one being offered focus at creation.
+  -- Decline focus handed to us at creation; never take it if it is elsewhere.
   if vim.api.nvim_get_current_win() == gwin then
     pcall(vim.api.nvim_set_current_win, realwin)
   end
 end
 
--- Given a buffer and the name(s) it was opened under, try to in-fill.  Returns
--- true when the buffer was taken over, false to fall through to Neovim's
--- default new-file behaviour.
+-- Try to in-fill `buf`; return true if taken over, false to fall through.
 function M.try_infill(buf, cur_names)
   if not M.config.enabled then
     return false
@@ -371,8 +296,7 @@ function M.try_infill(buf, cur_names)
     return false
   end
 
-  -- Probe each candidate; keep the first that names a blob.  Typically one git
-  -- call, at most one extra for a fallback interpretation.
+  -- First candidate that names a blob.
   local info, object, dir, tried = nil, nil, nil, {}
   for _, c in ipairs(candidates) do
     local key = c.dir .. "\0" .. c.object
@@ -399,8 +323,8 @@ function M.try_infill(buf, cur_names)
     return false
   end
 
-  -- Populate and lock down the buffer.  nofile keeps the read-only history from
-  -- being accidentally written back to a file literally named e.g. "HEAD^1".
+  -- Populate and lock down.  nofile prevents an accidental :w to a file named
+  -- e.g. "HEAD^1"; setup_companion may later upgrade this to buftype=help.
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modified = false
@@ -409,16 +333,13 @@ function M.try_infill(buf, cur_names)
   vim.bo[buf].swapfile = false
   vim.bo[buf].buftype = "nofile"
 
-  -- Inherit the filetype of the file we stood in for.
   local ft = vim.filetype.match({ filename = display_path, contents = lines })
   if ft and ft ~= "" then
     vim.bo[buf].filetype = ft
   end
 
-  -- Breadcrumb for statuslines / other tooling.
-  vim.b[buf].gitrev_object = object
+  vim.b[buf].gitrev_object = object -- breadcrumb for statuslines / tooling
 
-  -- As a diff companion, hand focus back to the real file and follow its close.
   if M.config.diff_companion then
     vim.schedule(function()
       setup_companion(buf)
@@ -428,9 +349,9 @@ function M.try_infill(buf, cur_names)
   return true
 end
 
--- Autocmd entry point.  `file` is the name as typed (<afile>); we also consider
--- the possibly-absolutised buffer name so a name like "HEAD^1" that Neovim
--- expanded to "/cwd/HEAD^1" is still recognised.
+-- Autocmd entry point.  Consider both the typed name (<afile>) and the
+-- possibly-absolutised buffer name, so "HEAD^1" expanded to "/cwd/HEAD^1" still
+-- matches.
 function M.on_new_file(buf, file)
   local names = {}
   local function push(n)
@@ -450,8 +371,7 @@ function M.on_new_file(buf, file)
     push(bufname)
   end
 
-  -- Never let an error here break opening a file.
-  pcall(M.try_infill, buf, names)
+  pcall(M.try_infill, buf, names) -- never let an error break opening a file
 end
 
 return M

@@ -1,16 +1,11 @@
--- gitrev.nvim entry point.
---
--- Hooks the attempt to edit a non-existent file (BufNewFile) and, when the name
--- looks like a git revision, in-fills the buffer with the corresponding blob.
--- All the real work is lazy-required on first trigger so startup stays cheap.
+-- gitrev.nvim: hook BufNewFile and in-fill revision-named buffers (lazy-required).
 
 if vim.g.loaded_gitrev then
   return
 end
 vim.g.loaded_gitrev = 1
 
--- gitrev needs vim.system (Neovim 0.10+).
-if not vim.system then
+if not vim.system then -- Neovim 0.10+ required
   vim.notify("[gitrev] requires Neovim 0.10+ (vim.system); disabled",
     vim.log.levels.WARN)
   return
