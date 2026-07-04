@@ -323,6 +323,23 @@ case "$out" in
   *) bad "companion focus :: $out" ;;
 esac
 
+# 17b. reissue: close the companion, :diffsplit again -> focus must STILL return
+#      to the real file.  bufhidden=wipe drops the buffer on close so the second
+#      :diffsplit rebuilds it (BufNewFile fires again) rather than reusing a
+#      lingering buffer that would skip setup and strand focus in the companion.
+out="$(cd "$WORK" && run_nvim \
+  'vim.cmd("diffsplit HEAD^1"); vim.wait(200);
+   for _,w in ipairs(vim.api.nvim_list_wins()) do
+     if vim.b[vim.api.nvim_win_get_buf(w)].gitrev_object then vim.api.nvim_win_close(w,false) end end;
+   vim.wait(50);
+   vim.cmd("diffsplit HEAD^1"); vim.wait(200); local cb=vim.api.nvim_get_current_buf();
+   io.write("focus_gitrev="..tostring(vim.b[cb].gitrev_object~=nil)..";name="..vim.fn.fnamemodify(vim.api.nvim_buf_get_name(cb),":t"))' \
+  src/hello.c)"
+case "$out" in
+  *"focus_gitrev=false"*"name=hello.c"*) ok "diff companion: focus returns to the real file on reissue" ;;
+  *) bad "companion focus on reissue :: $out" ;;
+esac
+
 # 18. companion is auxiliary: a single :quit on a clean real file exits nvim
 #     (the buftype=help companion does not keep the session alive).
 rm -f "$WORK/survived"
@@ -446,6 +463,22 @@ if [ -f "$WORK/survived25" ]; then
 else
   ok "stepaside: refused :q -> restored view -> :write -> :q exits"
 fi
+
+# 26. stepaside reissue: close the companion, :diffsplit again -> focus must
+#     STILL return to the real file (the QuitPre-shielded transient close must
+#     not defeat the wipe-on-real-close that keeps setup in step).
+out="$(cd "$WORK" && nvim --headless -u "$SA_INIT" src/hello.c \
+  +'lua vim.cmd("diffsplit HEAD^1"); vim.wait(200);
+   for _,w in ipairs(vim.api.nvim_list_wins()) do
+     if vim.b[vim.api.nvim_win_get_buf(w)].gitrev_object then vim.api.nvim_win_close(w,false) end end;
+   vim.wait(50);
+   vim.cmd("diffsplit HEAD^1"); vim.wait(200); local cb=vim.api.nvim_get_current_buf();
+   io.write("focus_gitrev="..tostring(vim.b[cb].gitrev_object~=nil)..";name="..vim.fn.fnamemodify(vim.api.nvim_buf_get_name(cb),":t"))' \
+  +'qa!' 2>&1)"
+case "$out" in
+  *"focus_gitrev=false"*"name=hello.c"*) ok "stepaside: focus returns to the real file on reissue" ;;
+  *) bad "stepaside focus on reissue :: $out" ;;
+esac
 
 say ""
 say "$pass passed, $fail failed"

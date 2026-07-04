@@ -116,6 +116,11 @@ only applies in a diff context; a plain `:e HEAD:path` opens the revision in the
 current window as an ordinary read-only buffer and is left alone. Disable the
 behaviour with `diff_companion = false`.
 
+A companion buffer is tied to its window: closing the window discards the buffer
+(`bufhidden=wipe`), so re-issuing `:diffsplit HEAD^1` builds a fresh companion —
+and re-runs the focus/quit setup — rather than silently reusing a lingering
+buffer that would strand focus in the revision.
+
 An alternative mechanism is available as `diff_companion = "stepaside"`: the
 buffer stays an ordinary `nofile` (no help-window side effects), and instead the
 companion **steps out of the way at quit time** — on `QuitPre` its window closes

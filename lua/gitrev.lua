@@ -259,6 +259,10 @@ local function setup_stepaside(gbuf, gwin, realwin)
         mods = gp[1] < rp[1] and "leftabove" or "rightbelow"
         size = vim.api.nvim_win_get_height(gwin)
       end
+      -- 'bufhidden=wipe' (set in setup_companion) would destroy the buffer the
+      -- instant we close its window -- but this close is transient, so shield it
+      -- and reopen the very same buffer if the quit is refused.
+      vim.bo[gbuf].bufhidden = "hide"
       pcall(vim.api.nvim_win_close, gwin, false)
       vim.schedule(function()
         if not (vim.api.nvim_win_is_valid(realwin) and vim.api.nvim_buf_is_valid(gbuf)) then
@@ -276,6 +280,9 @@ local function setup_stepaside(gbuf, gwin, realwin)
           end)
           vim.api.nvim_set_current_win(realwin)
         end)
+        if vim.api.nvim_buf_is_valid(gbuf) then
+          vim.bo[gbuf].bufhidden = "wipe" -- back to wipe-on-close for real closes
+        end
       end)
     end,
   })
@@ -323,6 +330,14 @@ local function setup_companion(gbuf)
     -- own mechanism, no autocmds.  Filetype/syntax and diff are unaffected.
     vim.bo[gbuf].buftype = "help"
   end
+
+  -- Wipe the companion when its window closes.  This buffer is tied to its diff
+  -- window; without it a closed-then-reissued `:diffsplit REV` would silently
+  -- reuse the lingering buffer, skip BufNewFile, and never re-run this setup --
+  -- so the focus decline below (and, for stepaside, the QuitPre hook) would only
+  -- ever fire the first time.  A fresh buffer each time keeps setup in step.
+  -- (stepaside guards its own transient close against this; see setup_stepaside.)
+  vim.bo[gbuf].bufhidden = "wipe"
 
   -- Decline focus handed to us at creation; never take it if it is elsewhere.
   if vim.api.nvim_get_current_win() == gwin then
