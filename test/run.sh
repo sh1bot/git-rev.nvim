@@ -375,6 +375,19 @@ case "$out" in
   *) bad "partner selection :: $out" ;;
 esac
 
+# 22. demur, don't grab: if focus has already moved off the companion by the time
+#     we run (here a split steals it before the scheduled callback), we must NOT
+#     steal it back to the real file -- we only decline focus handed to us.
+out="$(cd "$WORK" && run_nvim \
+  'vim.cmd("edit src/hello.c"); vim.cmd("diffsplit HEAD^1");
+   vim.cmd("botright split other.txt"); vim.wait(200);
+   local cb=vim.api.nvim_get_current_buf();
+   io.write("focus="..vim.fn.fnamemodify(vim.api.nvim_buf_get_name(cb),":t"))')"
+case "$out" in
+  *"focus=other.txt"*) ok "demur: focus already moved elsewhere is left alone" ;;
+  *) bad "focus demur :: $out" ;;
+esac
+
 say ""
 say "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

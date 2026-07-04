@@ -335,8 +335,14 @@ local function setup_companion(gbuf)
   -- we set and the diff highlighting are unaffected.
   vim.bo[gbuf].buftype = "help"
 
-  -- Focus the real, editable file.
-  pcall(vim.api.nvim_set_current_win, realwin)
+  -- Hand focus to the real, editable file -- but only if it was handed to us.
+  -- `:diffsplit` / `-d` leave the cursor in the freshly opened revision; we
+  -- simply decline that focus and pass it to the real file.  If focus is already
+  -- elsewhere (some other focus policy placed it), we do not interfere -- we only
+  -- demur when we are the one being offered focus at creation.
+  if vim.api.nvim_get_current_win() == gwin then
+    pcall(vim.api.nvim_set_current_win, realwin)
+  end
 end
 
 -- Given a buffer and the name(s) it was opened under, try to in-fill.  Returns
