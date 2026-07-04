@@ -291,12 +291,11 @@ end
 -- vim.schedule) because diff mode and the sibling windows are only settled after
 -- `:diffsplit` / `-d` finish.
 local function setup_companion(gbuf)
-  if not vim.api.nvim_buf_is_valid(gbuf) then
-    return
-  end
   -- Find the diff window showing our companion buffer.  win_findbuf gives the
   -- windows displaying it directly; we want the one in diff view.  If none is in
   -- a diff (e.g. a plain `:e REV:path`), this is not a companion -- leave it be.
+  -- (An invalid/wiped gbuf simply yields no windows, so no separate guard is
+  -- needed; and reaching a window that shows gbuf proves it is valid.)
   local gwin
   for _, w in ipairs(vim.fn.win_findbuf(gbuf)) do
     if vim.wo[w].diff then
