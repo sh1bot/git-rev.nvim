@@ -287,8 +287,18 @@ local function setup_companion(gbuf)
       local prev = vim.bo[gbuf].buftype
       vim.bo[gbuf].buftype = "help" -- auxiliary, for this quit decision only
       vim.schedule(function()
-        if vim.api.nvim_buf_is_valid(gbuf) then
-          vim.bo[gbuf].buftype = prev -- refused: back to an ordinary buffer
+        if not vim.api.nvim_buf_is_valid(gbuf) then
+          return -- the quit exited, or the companion is already gone
+        end
+        if vim.api.nvim_win_is_valid(realwin) then
+          vim.bo[gbuf].buftype = prev -- quit refused: back to an ordinary buffer
+        elseif vim.api.nvim_win_is_valid(gwin)
+          and vim.api.nvim_win_get_buf(gwin) == gbuf then
+          -- The quit closed the real window but Neovim stayed (other windows
+          -- were open), orphaning the companion -- so close it too; bufhidden
+          -- then wipes the buffer.  A non-auxiliary window necessarily remains
+          -- (that is why Neovim did not exit), so this cannot be the last one.
+          pcall(vim.api.nvim_win_close, gwin, false)
         end
       end)
     end,

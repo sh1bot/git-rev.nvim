@@ -119,6 +119,12 @@ quit is decided**. It is an ordinary read-only `nofile` the rest of the time; on
 nothing (diff mode, filetype, syntax) needs restoring. We never second-guess the
 quit ourselves — `:q!` and `:wq` pass straight through to Neovim's own logic.
 
+If other windows are open, `:q` on the real file is a genuine window close rather
+than an exit (with `'hidden'` the file is simply hidden, not lost) — which would
+leave the companion behind as an orphaned diff view. So when the real window
+actually closes while Neovim keeps running, the companion is closed with it; a
+`:q` that was *refused* (the real window survives) leaves it in place.
+
 This only applies in a diff context; a plain `:e HEAD:path` opens the revision in
 the current window as an ordinary read-only buffer and is left alone. Disable the
 behaviour with `diff_companion = false`.

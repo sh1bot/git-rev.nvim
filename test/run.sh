@@ -398,6 +398,42 @@ else
   ok "refused :q -> usable view -> :write -> :q exits cleanly"
 fi
 
+# 20c. multi-window: with a third window open, :q on the real file is a genuine
+#      window close (Neovim stays), which would strand the companion as an
+#      orphaned diff view.  It must be cleaned up instead.
+out="$(cd "$WORK" && run_nvim \
+  'vim.cmd("botright split other.txt");
+   local rw; for _,w in ipairs(vim.api.nvim_list_wins()) do
+     if vim.fn.fnamemodify(vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)),":t")=="hello.c" then rw=w end end;
+   vim.api.nvim_set_current_win(rw); vim.cmd("diffsplit HEAD^1"); vim.wait(200);
+   vim.api.nvim_set_current_win(rw); vim.cmd("quit"); vim.wait(200);
+   local rev=0; for _,b in ipairs(vim.api.nvim_list_bufs()) do
+     if vim.api.nvim_buf_is_valid(b) and vim.b[b].gitrev_object then rev=rev+1 end end;
+   io.write("wins="..#vim.api.nvim_list_wins()..";revision_left="..rev)' \
+  src/hello.c)"
+case "$out" in
+  *"wins=1"*"revision_left=0"*) ok "multi-window: closing the real file cleans up the orphaned companion" ;;
+  *) bad "orphan cleanup :: $out" ;;
+esac
+
+# 20d. but a refused multi-window :q (unsaved, 'hidden' off) must NOT clean up:
+#      the real window survives, so the companion stays paired with it.
+out="$(cd "$WORK" && run_nvim \
+  'vim.o.hidden=false; vim.cmd("botright split other.txt");
+   local rw; for _,w in ipairs(vim.api.nvim_list_wins()) do
+     if vim.fn.fnamemodify(vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)),":t")=="hello.c" then rw=w end end;
+   vim.api.nvim_set_current_win(rw); vim.cmd("diffsplit HEAD^1"); vim.wait(200);
+   vim.api.nvim_set_current_win(rw); vim.api.nvim_buf_set_lines(0,0,0,false,{"// dirty"});
+   local okq,e=pcall(vim.cmd,"quit"); vim.wait(200);
+   local rev=0; for _,b in ipairs(vim.api.nvim_list_bufs()) do
+     if vim.api.nvim_buf_is_valid(b) and vim.b[b].gitrev_object then rev=rev+1 end end;
+   io.write("err="..tostring(tostring(e):match("E%d+"))..";wins="..#vim.api.nvim_list_wins()..";revision_left="..rev)' \
+  src/hello.c)"
+case "$out" in
+  *"err=E37"*"wins=3"*"revision_left=1"*) ok "multi-window refused :q keeps the companion (real window survives)" ;;
+  *) bad "orphan keep-on-refusal :: $out" ;;
+esac
+
 # 21. partner selection ignores a non-diff editable window: with an extra
 #     editable split that is NOT in the diff, focus must still land on the diff
 #     partner, not the unrelated window.
