@@ -103,7 +103,7 @@ When a revision is in-filled as one side of a diff — `:diffsplit HEAD^1` or
   (`buftype=help`).
 
 Making it auxiliary means Neovim treats the *real* file's window as the one that
-matters, so quitting behaves the way you expect and no window-juggling is needed:
+matters, so quitting behaves the way you expect:
 
 - a single `:q` on the real file exits (the companion doesn't keep the session
   alive), and
@@ -111,25 +111,22 @@ matters, so quitting behaves the way you expect and no window-juggling is needed
   `'hidden'` set** — and leaves both windows, instead of hiding the file and
   stranding you in the read-only revision.
 
-The filetype/syntax and diff highlighting are unaffected by `buftype=help`. This
-only applies in a diff context; a plain `:e HEAD:path` opens the revision in the
-current window as an ordinary read-only buffer and is left alone. Disable the
+The trick is that the companion wears the `help` hat **only for the instant a
+quit is decided**. It is an ordinary read-only `nofile` the rest of the time; on
+`QuitPre` — which fires before Neovim weighs the `:q` — it flips to
+`buftype=help` so the real window is judged as the last one, then flips back to
+`nofile` if the quit turns out to have been refused. The window never moves, so
+nothing (diff mode, filetype, syntax) needs restoring. We never second-guess the
+quit ourselves — `:q!` and `:wq` pass straight through to Neovim's own logic.
+
+This only applies in a diff context; a plain `:e HEAD:path` opens the revision in
+the current window as an ordinary read-only buffer and is left alone. Disable the
 behaviour with `diff_companion = false`.
 
 A companion buffer is tied to its window: closing the window discards the buffer
 (`bufhidden=wipe`), so re-issuing `:diffsplit HEAD^1` builds a fresh companion —
 and re-runs the focus/quit setup — rather than silently reusing a lingering
 buffer that would strand focus in the revision.
-
-An alternative mechanism is available as `diff_companion = "stepaside"`: the
-buffer stays an ordinary `nofile` most of the time, and is flipped to
-`buftype=help` **only for the duration of a quit decision**. On `QuitPre` —
-which fires before Neovim weighs the `:q` — the companion is marked auxiliary so
-the real window is judged as the last one and the same native semantics apply;
-if the quit turns out to have been refused, the buffer flips straight back to
-`nofile`. The window never moves, so nothing (diff mode included) needs
-restoring. Same ergonomics as the default; the difference is only *when* the
-companion wears its `help` hat — momentarily, rather than for its whole life.
 
 ## Safety
 
@@ -171,7 +168,7 @@ require("gitrev").setup({
   timeout   = 2000,             -- ms; hard ceiling on any git call
   min_hex   = 7,                -- min length for a bare hex token to be an id
   notify    = true,             -- warn when a guard skips a blob
-  diff_companion = true,        -- true/"help", "stepaside", or false (see above)
+  diff_companion = true,        -- focus/quit behaviour for diff companions
 })
 ```
 

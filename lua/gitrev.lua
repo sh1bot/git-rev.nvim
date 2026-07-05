@@ -11,10 +11,9 @@ M.config = {
   timeout = 2000, -- ms ceiling on any git call
   min_hex = 7, -- min length for a bare hex token to count as an object id
   notify = true, -- warn when a guard skips a blob
-  -- Focus/quit behaviour for `:diffsplit REV` / `-d` companions: true or "help"
-  -- makes the companion auxiliary like a help window (buftype=help); "stepaside"
-  -- keeps buftype=nofile and steps the window out of :q's way instead; false
-  -- disables.
+  -- Focus/quit behaviour for `:diffsplit REV` / `-d` companions: return focus to
+  -- the real file and let a single :q on it exit (aborting on unsaved changes).
+  -- Set false to disable.
   diff_companion = true,
 }
 
@@ -230,42 +229,7 @@ end
 -- Core + entry point.
 --------------------------------------------------------------------------------
 
--- The "stepaside" companion style keeps the buffer an ordinary nofile.  On
--- QuitPre -- which fires *before* Neovim weighs the quit -- it flips the
--- companion buffer to buftype=help just long enough for that decision: an
--- auxiliary buffer does not count as a window, so the real window is judged as
--- the last one and Neovim's own don't-quit-when-unsaved logic applies natively
--- (:q on unsaved refuses with E37 even under 'hidden'; :q!/:wq pass through).
--- We never judge the quit ourselves -- QuitPre cannot see a !, 'confirm', or a
--- failing :wq write.  If the quit is refused (we are still here a tick later),
--- the buffer flips back to nofile.  The window never moves, so nothing needs
--- restoring -- diff mode included.
-local function setup_stepaside(gbuf, gwin, realwin)
-  -- Keyed on the real buffer and cleared each setup, so a reissued companion
-  -- against the same file replaces this hook instead of stacking a stale one.
-  local realbuf = vim.api.nvim_win_get_buf(realwin)
-  local aug = vim.api.nvim_create_augroup("gitrev_stepaside_" .. realbuf, { clear = true })
-  vim.api.nvim_create_autocmd("QuitPre", {
-    group = aug,
-    buffer = realbuf,
-    callback = function()
-      if vim.api.nvim_get_current_win() ~= realwin
-        or not vim.api.nvim_win_is_valid(gwin)
-        or vim.api.nvim_win_get_buf(gwin) ~= gbuf then
-        return
-      end
-      local prev = vim.bo[gbuf].buftype
-      vim.bo[gbuf].buftype = "help" -- auxiliary, for this quit decision only
-      vim.schedule(function()
-        if vim.api.nvim_buf_is_valid(gbuf) then
-          vim.bo[gbuf].buftype = prev -- refused: back to an ordinary buffer
-        end
-      end)
-    end,
-  })
-end
-
--- Make a diff-companion buffer behave like Vim's help window.  Deferred (via
+-- Make an in-filled diff companion follow the real file's quit.  Deferred (via
 -- vim.schedule) because diff mode and sibling windows settle only after
 -- `:diffsplit` / `-d` finish.
 local function setup_companion(gbuf)
@@ -298,21 +262,43 @@ local function setup_companion(gbuf)
     return
   end
 
-  if M.config.diff_companion == "stepaside" then
-    setup_stepaside(gbuf, gwin, realwin)
-  else
-    -- buftype=help makes the companion auxiliary: it stops keeping the session
-    -- alive and stops interfering with the real file's :q, so a single :q exits
-    -- when clean and aborts on unsaved changes (E37) even under 'hidden' -- Vim's
-    -- own mechanism, no autocmds.  Filetype/syntax and diff are unaffected.
-    vim.bo[gbuf].buftype = "help"
-  end
+  -- On QuitPre -- which fires *before* Neovim weighs the quit -- flip the
+  -- companion buffer to buftype=help just long enough for that decision: an
+  -- auxiliary buffer does not count as a window, so the real window is judged as
+  -- the last one and Neovim's own don't-quit-when-unsaved logic applies natively
+  -- (:q on unsaved refuses with E37 even under 'hidden'; :q!/:wq pass through).
+  -- We never judge the quit ourselves -- QuitPre cannot see a !, 'confirm', or a
+  -- failing :wq write.  If the quit is refused (we are still here a tick later),
+  -- the buffer flips back to nofile.  The window never moves, so nothing needs
+  -- restoring -- diff mode included.  Keyed on the real buffer and cleared each
+  -- setup, so a reissued companion against the same file replaces this hook
+  -- instead of stacking a stale one.
+  local realbuf = vim.api.nvim_win_get_buf(realwin)
+  local aug = vim.api.nvim_create_augroup("gitrev_companion_" .. realbuf, { clear = true })
+  vim.api.nvim_create_autocmd("QuitPre", {
+    group = aug,
+    buffer = realbuf,
+    callback = function()
+      if vim.api.nvim_get_current_win() ~= realwin
+        or not vim.api.nvim_win_is_valid(gwin)
+        or vim.api.nvim_win_get_buf(gwin) ~= gbuf then
+        return
+      end
+      local prev = vim.bo[gbuf].buftype
+      vim.bo[gbuf].buftype = "help" -- auxiliary, for this quit decision only
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(gbuf) then
+          vim.bo[gbuf].buftype = prev -- refused: back to an ordinary buffer
+        end
+      end)
+    end,
+  })
 
   -- Wipe the companion when its window closes.  This buffer is tied to its diff
   -- window; without it a closed-then-reissued `:diffsplit REV` would silently
   -- reuse the lingering buffer, skip BufNewFile, and never re-run this setup --
-  -- so the focus decline below (and, for stepaside, the QuitPre hook) would only
-  -- ever fire the first time.  A fresh buffer each time keeps setup in step.
+  -- so the focus decline below and the QuitPre hook above would only ever fire
+  -- the first time.  A fresh buffer each time keeps setup in step.
   vim.bo[gbuf].bufhidden = "wipe"
 
   -- Decline focus handed to us at creation; never take it if it is elsewhere.
