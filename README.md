@@ -122,13 +122,14 @@ and re-runs the focus/quit setup — rather than silently reusing a lingering
 buffer that would strand focus in the revision.
 
 An alternative mechanism is available as `diff_companion = "stepaside"`: the
-buffer stays an ordinary `nofile` (no help-window side effects), and instead the
-companion **steps out of the way at quit time** — on `QuitPre` its window closes
-before Neovim decides the quit's fate, so the real window is judged as the last
-one and the same native semantics apply; if the quit turns out to have been
-refused, the window is put back (same side, same size, diff re-established).
-Same ergonomics, different trade-off: no `buftype=help` quirks, but a brief
-window close/restore on every refused `:q`.
+buffer stays an ordinary `nofile` most of the time, and is flipped to
+`buftype=help` **only for the duration of a quit decision**. On `QuitPre` —
+which fires before Neovim weighs the `:q` — the companion is marked auxiliary so
+the real window is judged as the last one and the same native semantics apply;
+if the quit turns out to have been refused, the buffer flips straight back to
+`nofile`. The window never moves, so nothing (diff mode included) needs
+restoring. Same ergonomics as the default; the difference is only *when* the
+companion wears its `help` hat — momentarily, rather than for its whole life.
 
 ## Safety
 

@@ -230,58 +230,35 @@ end
 -- Core + entry point.
 --------------------------------------------------------------------------------
 
--- The "stepaside" companion style: the buffer stays ordinary (buftype=nofile);
--- instead, on QuitPre the companion window closes *before* Neovim decides the
--- quit's fate, so the real window is judged as the last one and Neovim's own
--- don't-quit-when-unsaved logic applies natively (:q on unsaved refuses with
--- E37 even under 'hidden'; :q! and :wq pass through).  We never judge the quit
--- ourselves -- QuitPre cannot see a !, 'confirm', or a failing :wq write.  If
--- the quit turns out to have been refused (the real window still exists a tick
--- later), the companion is put back: same side, same size, diff re-established
--- on both windows ('diffopt' closeoff dropped it when the companion closed).
+-- The "stepaside" companion style keeps the buffer an ordinary nofile.  On
+-- QuitPre -- which fires *before* Neovim weighs the quit -- it flips the
+-- companion buffer to buftype=help just long enough for that decision: an
+-- auxiliary buffer does not count as a window, so the real window is judged as
+-- the last one and Neovim's own don't-quit-when-unsaved logic applies natively
+-- (:q on unsaved refuses with E37 even under 'hidden'; :q!/:wq pass through).
+-- We never judge the quit ourselves -- QuitPre cannot see a !, 'confirm', or a
+-- failing :wq write.  If the quit is refused (we are still here a tick later),
+-- the buffer flips back to nofile.  The window never moves, so nothing needs
+-- restoring -- diff mode included.
 local function setup_stepaside(gbuf, gwin, realwin)
+  -- Keyed on the real buffer and cleared each setup, so a reissued companion
+  -- against the same file replaces this hook instead of stacking a stale one.
+  local realbuf = vim.api.nvim_win_get_buf(realwin)
+  local aug = vim.api.nvim_create_augroup("gitrev_stepaside_" .. realbuf, { clear = true })
   vim.api.nvim_create_autocmd("QuitPre", {
-    buffer = vim.api.nvim_win_get_buf(realwin),
+    group = aug,
+    buffer = realbuf,
     callback = function()
       if vim.api.nvim_get_current_win() ~= realwin
         or not vim.api.nvim_win_is_valid(gwin)
         or vim.api.nvim_win_get_buf(gwin) ~= gbuf then
         return
       end
-      local gp = vim.api.nvim_win_get_position(gwin)
-      local rp = vim.api.nvim_win_get_position(realwin)
-      local vert = gp[2] ~= rp[2]
-      local mods, size
-      if vert then
-        mods = (gp[2] < rp[2] and "leftabove" or "rightbelow") .. " vertical"
-        size = vim.api.nvim_win_get_width(gwin)
-      else
-        mods = gp[1] < rp[1] and "leftabove" or "rightbelow"
-        size = vim.api.nvim_win_get_height(gwin)
-      end
-      -- 'bufhidden=wipe' (set in setup_companion) would destroy the buffer the
-      -- instant we close its window -- but this close is transient, so shield it
-      -- and reopen the very same buffer if the quit is refused.
-      vim.bo[gbuf].bufhidden = "hide"
-      pcall(vim.api.nvim_win_close, gwin, false)
+      local prev = vim.bo[gbuf].buftype
+      vim.bo[gbuf].buftype = "help" -- auxiliary, for this quit decision only
       vim.schedule(function()
-        if not (vim.api.nvim_win_is_valid(realwin) and vim.api.nvim_buf_is_valid(gbuf)) then
-          return -- the quit went through
-        end
-        pcall(function() -- refused: restore the companion
-          vim.api.nvim_set_current_win(realwin)
-          vim.cmd(mods .. " sbuffer " .. gbuf)
-          gwin = vim.api.nvim_get_current_win()
-          local resize = vert and vim.api.nvim_win_set_width or vim.api.nvim_win_set_height
-          resize(gwin, size)
-          vim.cmd("diffthis")
-          vim.api.nvim_win_call(realwin, function()
-            vim.cmd("diffthis")
-          end)
-          vim.api.nvim_set_current_win(realwin)
-        end)
         if vim.api.nvim_buf_is_valid(gbuf) then
-          vim.bo[gbuf].bufhidden = "wipe" -- back to wipe-on-close for real closes
+          vim.bo[gbuf].buftype = prev -- refused: back to an ordinary buffer
         end
       end)
     end,
@@ -336,7 +313,6 @@ local function setup_companion(gbuf)
   -- reuse the lingering buffer, skip BufNewFile, and never re-run this setup --
   -- so the focus decline below (and, for stepaside, the QuitPre hook) would only
   -- ever fire the first time.  A fresh buffer each time keeps setup in step.
-  -- (stepaside guards its own transient close against this; see setup_stepaside.)
   vim.bo[gbuf].bufhidden = "wipe"
 
   -- Decline focus handed to us at creation; never take it if it is elsewhere.
