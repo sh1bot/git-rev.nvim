@@ -229,12 +229,12 @@ end
 -- Core + entry point.
 --------------------------------------------------------------------------------
 
--- Make an in-filled diff companion follow the real file's quit.  Deferred (via
--- vim.schedule) because diff mode and sibling windows settle only after
--- `:diffsplit` / `-d` finish.
+-- Wire up an in-filled diff companion: hand focus to the real file, keep a
+-- single :q on it working, and wipe the companion when its window closes.
+-- Deferred (vim.schedule) because diff mode and sibling windows settle only
+-- after `:diffsplit` / `-d` finish.
 local function setup_companion(gbuf)
-  -- The diff window showing our buffer (none => plain `:e REV:path`, leave be).
-  -- An invalid gbuf yields no windows, so no separate validity guard is needed.
+  -- The diff window showing our buffer, if any (a plain `:e REV:path` has none).
   local gwin
   for _, w in ipairs(vim.fn.win_findbuf(gbuf)) do
     if vim.wo[w].diff then
@@ -246,8 +246,8 @@ local function setup_companion(gbuf)
     return
   end
 
-  -- The editable diff window beside it -- the real file.  Requiring diff here
-  -- keeps a non-diff editable split from being mistaken for the partner.
+  -- The editable diff window beside it: the real file.  Requiring diff rejects a
+  -- non-diff editable split.
   local realwin
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(gwin))) do
     if w ~= gwin and vim.wo[w].diff then
@@ -262,17 +262,12 @@ local function setup_companion(gbuf)
     return
   end
 
-  -- On QuitPre -- which fires *before* Neovim weighs the quit -- flip the
-  -- companion buffer to buftype=help just long enough for that decision: an
-  -- auxiliary buffer does not count as a window, so the real window is judged as
-  -- the last one and Neovim's own don't-quit-when-unsaved logic applies natively
-  -- (:q on unsaved refuses with E37 even under 'hidden'; :q!/:wq pass through).
-  -- We never judge the quit ourselves -- QuitPre cannot see a !, 'confirm', or a
-  -- failing :wq write.  If the quit is refused (we are still here a tick later),
-  -- the buffer flips back to nofile.  The window never moves, so nothing needs
-  -- restoring -- diff mode included.  Keyed on the real buffer and cleared each
-  -- setup, so a reissued companion against the same file replaces this hook
-  -- instead of stacking a stale one.
+  -- Follow the real file's :q.  QuitPre fires before Neovim decides the quit, so
+  -- flip the companion to buftype=help for that decision: an auxiliary buffer is
+  -- not counted, so the real window is judged the last one and :q quits -- or,
+  -- unsaved, aborts with E37 even under 'hidden' -- as if the companion were not
+  -- there.  :q! and :wq pass through untouched.  Keyed on the real buffer and
+  -- cleared each setup, so re-issuing against the same file replaces the hook.
   local realbuf = vim.api.nvim_win_get_buf(realwin)
   local aug = vim.api.nvim_create_augroup("gitrev_companion_" .. realbuf, { clear = true })
   vim.api.nvim_create_autocmd("QuitPre", {
@@ -285,33 +280,27 @@ local function setup_companion(gbuf)
         return
       end
       local prev = vim.bo[gbuf].buftype
-      vim.bo[gbuf].buftype = "help" -- auxiliary, for this quit decision only
-      vim.schedule(function()
+      vim.bo[gbuf].buftype = "help"
+      vim.schedule(function() -- a tick later the quit has resolved:
         if not vim.api.nvim_buf_is_valid(gbuf) then
-          return -- the quit exited, or the companion is already gone
-        end
-        if vim.api.nvim_win_is_valid(realwin) then
-          vim.bo[gbuf].buftype = prev -- quit refused: back to an ordinary buffer
+          return -- companion gone (Neovim exited, or the buffer was wiped)
+        elseif vim.api.nvim_win_is_valid(realwin) then
+          vim.bo[gbuf].buftype = prev -- quit refused: restore the ordinary buffer
         elseif vim.api.nvim_win_is_valid(gwin)
           and vim.api.nvim_win_get_buf(gwin) == gbuf then
-          -- The quit closed the real window but Neovim stayed (other windows
-          -- were open), orphaning the companion -- so close it too; bufhidden
-          -- then wipes the buffer.  A non-auxiliary window necessarily remains
-          -- (that is why Neovim did not exit), so this cannot be the last one.
+          -- real window closed but Neovim stayed: close the orphan (wiping it)
           pcall(vim.api.nvim_win_close, gwin, false)
         end
       end)
     end,
   })
 
-  -- Wipe the companion when its window closes.  This buffer is tied to its diff
-  -- window; without it a closed-then-reissued `:diffsplit REV` would silently
-  -- reuse the lingering buffer, skip BufNewFile, and never re-run this setup --
-  -- so the focus decline below and the QuitPre hook above would only ever fire
-  -- the first time.  A fresh buffer each time keeps setup in step.
+  -- Tie the companion to its window: closing it wipes the buffer, so a later
+  -- `:diffsplit REV` builds a fresh one (re-running this setup) rather than
+  -- reusing a stale buffer that would skip BufNewFile.
   vim.bo[gbuf].bufhidden = "wipe"
 
-  -- Decline focus handed to us at creation; never take it if it is elsewhere.
+  -- Hand focus to the real file if we were given it; leave it be otherwise.
   if vim.api.nvim_get_current_win() == gwin then
     pcall(vim.api.nvim_set_current_win, realwin)
   end

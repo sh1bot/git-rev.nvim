@@ -96,43 +96,28 @@ needed).
 ## Diff companion
 
 When a revision is in-filled as one side of a diff — `:diffsplit HEAD^1` or
-`nvim -d file.txt HEAD^1` — it behaves like a companion to the real file:
+`nvim -d file.txt HEAD^1` — it behaves as a companion to the real file:
 
-- **focus returns to the real, editable file** (not the read-only revision), and
-- the companion window is made **auxiliary**, exactly like Neovim's help window
-  (`buftype=help`).
+- **focus returns to the real, editable file**, not the read-only revision, and
+- a single `:q` on the real file quits as if the companion weren't there: it
+  exits when clean, and aborts with `E37` when the file has unsaved changes —
+  **even with `'hidden'` set** — instead of hiding the file and stranding you in
+  the revision.
 
-Making it auxiliary means Neovim treats the *real* file's window as the one that
-matters, so quitting behaves the way you expect:
+This works by flipping the companion to an auxiliary `buftype=help` for the
+instant Neovim decides the quit (on `QuitPre`), then back to `nofile`; an
+auxiliary window isn't counted, so the real window is judged the last one. `:q!`
+and `:wq` pass straight through.
 
-- a single `:q` on the real file exits (the companion doesn't keep the session
-  alive), and
-- if the real file has unsaved changes, `:q` aborts with `E37` — **even with
-  `'hidden'` set** — and leaves both windows, instead of hiding the file and
-  stranding you in the read-only revision.
+With other windows open, `:q` on the real file is a window close rather than an
+exit (under `'hidden'` the file is hidden, not lost); the companion is closed
+along with the real window so it isn't left as an orphaned diff view. Closing the
+companion's own window discards its buffer (`bufhidden=wipe`), so re-issuing
+`:diffsplit HEAD^1` builds a fresh one.
 
-The trick is that the companion wears the `help` hat **only for the instant a
-quit is decided**. It is an ordinary read-only `nofile` the rest of the time; on
-`QuitPre` — which fires before Neovim weighs the `:q` — it flips to
-`buftype=help` so the real window is judged as the last one, then flips back to
-`nofile` if the quit turns out to have been refused. The window never moves, so
-nothing (diff mode, filetype, syntax) needs restoring. We never second-guess the
-quit ourselves — `:q!` and `:wq` pass straight through to Neovim's own logic.
-
-If other windows are open, `:q` on the real file is a genuine window close rather
-than an exit (with `'hidden'` the file is simply hidden, not lost) — which would
-leave the companion behind as an orphaned diff view. So when the real window
-actually closes while Neovim keeps running, the companion is closed with it; a
-`:q` that was *refused* (the real window survives) leaves it in place.
-
-This only applies in a diff context; a plain `:e HEAD:path` opens the revision in
-the current window as an ordinary read-only buffer and is left alone. Disable the
-behaviour with `diff_companion = false`.
-
-A companion buffer is tied to its window: closing the window discards the buffer
-(`bufhidden=wipe`), so re-issuing `:diffsplit HEAD^1` builds a fresh companion —
-and re-runs the focus/quit setup — rather than silently reusing a lingering
-buffer that would strand focus in the revision.
+Only a diff context is affected; a plain `:e HEAD:path` opens the revision in the
+current window as an ordinary read-only buffer. Disable with
+`diff_companion = false`.
 
 ## Safety
 
