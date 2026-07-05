@@ -360,7 +360,7 @@ function M.try_infill(buf, cur_names)
   end
 
   -- Populate and lock down.  nofile prevents an accidental :w to a file named
-  -- e.g. "HEAD^1"; setup_companion may later upgrade this to buftype=help.
+  -- e.g. "HEAD^1".
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modified = false
